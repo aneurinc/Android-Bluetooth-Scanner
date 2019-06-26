@@ -1,4 +1,4 @@
-package com.nsc9012.bluetooth.ui
+package com.nsc9012.bluetooth.devices
 
 import android.Manifest
 import android.app.Activity
@@ -12,12 +12,13 @@ import android.content.pm.PackageManager
 import android.support.v7.app.AppCompatActivity
 import android.os.Bundle
 import android.support.v4.app.ActivityCompat
-import android.support.v4.content.ContextCompat
+import android.support.v7.widget.DividerItemDecoration
+import android.support.v7.widget.LinearLayoutManager
 import com.nsc9012.bluetooth.R
-import com.nsc9012.bluetooth.extension.hasPermission
-import com.nsc9012.bluetooth.extension.logd
+import com.nsc9012.bluetooth.extension.*
+import kotlinx.android.synthetic.main.activity_devices.*
 
-class MainActivity : AppCompatActivity() {
+class DevicesActivity : AppCompatActivity() {
 
     companion object {
         const val ENABLE_BLUETOOTH = 1
@@ -25,28 +26,60 @@ class MainActivity : AppCompatActivity() {
         const val REQUEST_ACCESS_COARSE_LOCATION = 3
     }
 
+    /* Broadcast receiver to listen for discovery results. */
+    private val bluetoothDiscoveryResult = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == BluetoothDevice.ACTION_FOUND) {
+                val device: BluetoothDevice = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)!!
+                deviceListAdapter.addDevice(device)
+            }
+        }
+    }
+
+    /* Broadcast receiver to listen for discovery updates. */
+    private val bluetoothDiscoveryMonitor = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                BluetoothAdapter.ACTION_DISCOVERY_STARTED -> {
+                    progress_bar.visible()
+                    toast("Scan started...")
+                }
+                BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> {
+                    progress_bar.invisible()
+                    toast("Scan complete. Found ${deviceListAdapter.itemCount} devices.")
+                }
+            }
+        }
+    }
+
     private val bluetoothAdapter = BluetoothAdapter.getDefaultAdapter()
-    private val deviceList = ArrayList<BluetoothDevice>()
+    private val deviceListAdapter = DevicesAdapter()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
+        setContentView(R.layout.activity_devices)
+        initUI()
+    }
 
-        initBluetooth()
+    private fun initUI() {
+        title = "Bluetooth Scanner"
+        recycler_view_devices.adapter = deviceListAdapter
+        recycler_view_devices.layoutManager = LinearLayoutManager(this)
+        recycler_view_devices.addItemDecoration(DividerItemDecoration(this, DividerItemDecoration.VERTICAL))
+        button_discover.setOnClickListener { initBluetooth() }
     }
 
     private fun initBluetooth() {
+
+        if (bluetoothAdapter.isDiscovering) return
+
         if (bluetoothAdapter.isEnabled) {
-            initBluetoothUI()
+            enableDiscovery()
         } else {
             // Bluetooth isn't enabled - prompt user to turn it on
             val intent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
             startActivityForResult(intent, ENABLE_BLUETOOTH)
         }
-    }
-
-    private fun initBluetoothUI() {
-        enableDiscovery()
     }
 
     private fun enableDiscovery() {
@@ -55,15 +88,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun monitorDiscovery() {
-        val discoveryMonitor = BluetoothDiscoveryMonitor()
-        registerReceiver(discoveryMonitor, IntentFilter(BluetoothAdapter.ACTION_DISCOVERY_STARTED))
-        registerReceiver(discoveryMonitor, IntentFilter(BluetoothAdapter.ACTION_DISCOVERY_FINISHED))
+        registerReceiver(bluetoothDiscoveryMonitor, IntentFilter(BluetoothAdapter.ACTION_DISCOVERY_STARTED))
+        registerReceiver(bluetoothDiscoveryMonitor, IntentFilter(BluetoothAdapter.ACTION_DISCOVERY_FINISHED))
     }
 
     private fun startDiscovery() {
         if (hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION)) {
             if (bluetoothAdapter.isEnabled && !bluetoothAdapter.isDiscovering) {
-                registerReceiver(BluetoothDiscoveryResult(), IntentFilter(BluetoothDevice.ACTION_FOUND))
                 beginDiscovery()
             }
         } else {
@@ -76,8 +107,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun beginDiscovery() {
-        logd("Starting discovery")
-        deviceList.clear()
+        registerReceiver(bluetoothDiscoveryResult, IntentFilter(BluetoothDevice.ACTION_FOUND))
+        deviceListAdapter.clearDevices()
         monitorDiscovery()
         bluetoothAdapter.startDiscovery()
     }
@@ -86,10 +117,9 @@ class MainActivity : AppCompatActivity() {
         when (requestCode) {
             REQUEST_ACCESS_COARSE_LOCATION -> {
                 if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                    registerReceiver(BluetoothDiscoveryResult(), IntentFilter(BluetoothDevice.ACTION_FOUND))
                     beginDiscovery()
                 } else {
-                    // User denied permission...
+                    toast("Permission required to scan for devices.")
                 }
             }
         }
@@ -98,36 +128,20 @@ class MainActivity : AppCompatActivity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         when (requestCode) {
             ENABLE_BLUETOOTH -> if (resultCode == Activity.RESULT_OK) {
-                initBluetoothUI()
+                enableDiscovery()
             }
             REQUEST_ENABLE_DISCOVERY -> if (resultCode == Activity.RESULT_CANCELED) {
-                logd("Discovery cancelled by user.")
+                toast("Discovery cancelled.")
             } else {
                 startDiscovery()
             }
         }
     }
 
-    /* Broadcast receiver to listen for discovery results. */
-    private inner class BluetoothDiscoveryResult : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            val remoteDeviceName = intent?.getStringExtra(BluetoothDevice.EXTRA_NAME)
-            val remoteDevice: BluetoothDevice = intent?.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)!!
-            deviceList.add(remoteDevice)
-            logd("Discovered $remoteDeviceName")
-        }
+    override fun onDestroy() {
+        super.onDestroy()
+        unregisterReceiver(bluetoothDiscoveryMonitor)
+        unregisterReceiver(bluetoothDiscoveryResult)
     }
 
-    /* Broadcast receiver to listen for discovery updates. */
-    private inner class BluetoothDiscoveryMonitor : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            if (BluetoothAdapter.ACTION_DISCOVERY_STARTED == intent?.action) {
-                // Discovery has started
-                logd("Discovery started...")
-            } else if (BluetoothAdapter.ACTION_DISCOVERY_FINISHED == intent?.action) {
-                // Discovery is complete
-                logd("Discovery complete.")
-            }
-        }
-    }
 }
